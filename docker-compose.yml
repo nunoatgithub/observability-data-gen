@@ -1,0 +1,175 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: observability
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - observability-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.16.0
+    container_name: elasticsearch
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - observability-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
+      KAFKA_LOG4J_LOGGERS: "kafka=WARN,kafka.controller=WARN,kafka.log.LogCleaner=WARN,state.change.logger=WARN,kafka.coordinator=WARN,kafka.network=WARN,kafka.server=WARN,kafka.zookeeper=WARN,kafka.log=WARN"
+    networks:
+      - observability-network
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      start_period: 30s
+      interval: 5s
+      timeout: 10s
+      retries: 5
+
+  kafka-topics-init:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka-topics-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - observability-network
+    restart: "no"
+    command: >
+      bash -c "
+        echo 'Kafka is ready! Creating topics...'
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic gateway-processor-request --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic gateway-processor-reply --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic gateway-processor-fire-forget --partitions 1 --replication-factor 1
+        
+        echo 'Listing created topics:'
+        kafka-topics --bootstrap-server kafka:29092 --list
+        echo 'Kafka topics initialization completed!'
+      "
+
+  processor-service:
+    image: observability/processor-service:1.0.0
+    container_name: processor-service
+    ports:
+      - "9981:9981"
+      - "9090:9090"
+    depends_on:
+      kafka-topics-init:
+        condition: service_completed_successfully
+    networks:
+      - observability-network
+    environment:
+      JAVA_TOOL_OPTIONS: "-javaagent:/otel/opentelemetry-javaagent.jar"
+      OTEL_SERVICE_NAME: processor-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-test-collector:5318"
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_RESOURCE_ATTRIBUTES: "service.version=1.0.0,service.namespace=observability"
+      OTEL_PROPAGATORS: "tracecontext,baggage"
+      OTEL_INSTRUMENTATION_LOGBACK_APPENDER_ENABLED: "true"
+      OTEL_INSTRUMENTATION_LOGBACK_MDC_ADD_BAGGAGE: "true"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+    volumes:
+      - ./otel/opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar:ro
+
+  gateway-service:
+    image: observability/gateway-service:1.0.0
+    container_name: gateway-service
+    ports:
+      - "9980:9980"
+    depends_on:
+      kafka-topics-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - observability-network
+    environment:
+      JAVA_TOOL_OPTIONS: "-javaagent:/otel/opentelemetry-javaagent.jar"
+      OTEL_SERVICE_NAME: gateway-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-test-collector:5318"
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_RESOURCE_ATTRIBUTES: "service.version=1.0.0,service.namespace=observability"
+      OTEL_PROPAGATORS: "tracecontext,baggage"
+      OTEL_INSTRUMENTATION_LOGBACK_APPENDER_ENABLED: "true"
+      OTEL_INSTRUMENTATION_LOGBACK_MDC_ADD_BAGGAGE: "true"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+      POSTGRES_HOST: postgres-db
+      POSTGRES_DB: observability
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      ELASTICSEARCH_URIS: http://elasticsearch:9200
+    volumes:
+      - ./otel/opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar:ro
+
+  otel-test-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-test-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    user: "1000:1000"
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - ./otel-logs:/var/log/otel
+    ports:
+      - "5318:5318"   # OTLP HTTP receiver
+    networks:
+      - observability-network
+
+networks:
+  observability-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  elasticsearch-data:

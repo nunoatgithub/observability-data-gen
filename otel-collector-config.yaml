@@ -1,0 +1,33 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:5318
+
+processors:
+  batch:
+
+exporters:
+  file:
+    path: /var/log/otel/telemetry.log
+    rotation:
+      max_megabytes: 100
+      max_days: 1
+      max_backups: 10
+  otlphttp/production:
+    endpoint: "http://host.docker.internal:4318"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file, otlphttp/production]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file, otlphttp/production]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file, otlphttp/production]

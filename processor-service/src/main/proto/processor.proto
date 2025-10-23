@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.observability.processor.grpc";
+option java_outer_classname = "ProcessorProto";
+
+package processor;
+
+service ProcessorService {
+  rpc ProcessData (ProcessRequest) returns (ProcessResponse);
+}
+
+message ProcessRequest {
+  string message = 1;
+}
+
+message ProcessResponse {
+  string service = 1;
+  string timestamp = 2;
+  string processedData = 3;
+  string data = 4;
+}
+

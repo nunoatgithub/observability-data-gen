@@ -1,0 +1,71 @@
+server:
+  port: 9981
+
+spring:
+  application:
+    name: processor-service
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      group-id: processor-service-group
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+
+grpc:
+  server:
+    port: 9090
+
+logging:
+  level:
+    com.observability: INFO
+    org.apache.kafka: WARN
+    org.springframework.kafka: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %logger{36} - %msg%n"
+
+# OpenTelemetry configuration
+otel:
+  service:
+    name: processor-service
+  resource:
+    attributes:
+      service.version: "1.0.0"
+      service.namespace: "observability"
+  exporter:
+    otlp:
+      endpoint: "http://host.docker.internal:4318"
+      protocol: http/protobuf
+  traces:
+    exporter: otlp
+  metrics:
+    exporter: otlp
+  logs:
+    exporter: otlp
+  propagators:
+    - tracecontext
+    - baggage
+  instrumentation:
+    spring-kafka:
+      enabled: true
+    logback:
+      appender:
+        enabled: true
+      mdc:
+        add-baggage: true
+
+management:
+  tracing:
+    enabled: true
+    sampling:
+      probability: 1.0
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
